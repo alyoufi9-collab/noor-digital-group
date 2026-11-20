@@ -1,122 +1,292 @@
-# ==========================================
-# Noor Digital Group - المشروع الكل - كود واحد
-# انسخ الكود ده كلو والصقو في app.py
-# ==========================================
-from flask import Flask, render_template_string, request, redirect, session
-import os, sqlite3, base64
-app = Flask(__name__)
-app.secret_key = "noor-2026-full-project"
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
+# Noor Digital Group - Backend - جديد - FastAPI - من الصفر
+import os, re, uuid
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 
-# ---------- قاعدة البيانات ----------
-def db():
-    c = sqlite3.connect("noor.db")
-    c.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT, phone TEXT, password TEXT)")
-    c.execute("CREATE TABLE IF NOT EXISTS posts (id INTEGER PRIMARY KEY, user TEXT, text TEXT, img TEXT, is_video INTEGER, likes INTEGER DEFAULT 0)")
-    c.execute("CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY, name TEXT, price TEXT, img TEXT)")
-    if c.execute("SELECT count(*) FROM products").fetchone()[0] == 0:
-        for n,p,i in [("تلفون سامسونج","450,000 ج","📱"),("لابتوب HP","1,200,000 ج","💻"),("سماعة بلوتوث","85,000 ج","🎧"),("ساعة ذكية","120,000 ج","⌚"),("كاميرا","900,000 ج","📷"),("بلايستيشن","1,500,000 ج","🎮")]:
-            c.execute("INSERT INTO products (name,price,img) VALUES (?,?,?)",(n,p,i))
-    if c.execute("SELECT count(*) FROM posts").fetchone()[0] == 0:
-        c.execute("INSERT INTO posts (user,text,img,is_video,likes) VALUES (?,?,?,?,?)",("نور","مرحب بيكم في Noor Digital Group 🔥 اكبر منصة سودانية","",0,124))
-        c.execute("INSERT INTO posts (user,text,img,is_video,likes) VALUES (?,?,?,?,?)",("يوسف","NoorShot نزل - صور فيديو واربح 🔥","https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=500",0,89))
-        c.execute("INSERT INTO posts (user,text,img,is_video,likes) VALUES (?,?,?,?,?)",("سارة","منو جرب NoorMarket ؟ رهيب والله","",0,56))
-    c.commit()
-    return c
+from fastapi import FastAPI, Depends, HTTPException, status, WebSocket, WebSocketDisconnect, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from pydantic import BaseModel, Field, EmailStr, field_validator
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker, Session
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
-# ---------- التصميم ----------
-CSS = "<style>*{margin:0;padding:0;box-sizing:border-box;font-family:Tahoma}body{background:#f0f2f5;direction:rtl}.top{background:#fff;padding:12px 15px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:99}.logo{font-size:22px;font-weight:900;color:#1877f2}.logo span{color:#ff6b00}.top a{color:#333;text-decoration:none;font-weight:700;margin:0 5px;font-size:13px}.hero{background:linear-gradient(135deg,#1877f2,#7b2ff7,#ff6b00);color:#fff;padding:35px 20px;text-align:center}.hero h1{font-size:28px;margin-bottom:10px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:15px}.card{background:#fff;border-radius:16px;padding:18px;text-align:center;box-shadow:0 2px 10px #0001}.card .icon{font-size:38px}.card p{color:#777;font-size:13px;margin-bottom:12px}.card a{display:block;background:#1877f2;color:#fff;padding:10px;border-radius:10px;text-decoration:none;font-weight:700}.card:nth-child(2) a{background:#ff6b00}.card:nth-child(3) a{background:#e1306c}.card:nth-child(4) a{background:#00c853}.card:nth-child(5) a{background:#7b2ff7}.card:nth-child(6) a{background:#111}.container{max-width:600px;margin:auto;padding:15px}.post{background:#fff;border-radius:14px;padding:15px;margin-bottom:12px;box-shadow:0 1px 5px #0001}.post img,.post video{width:100%;border-radius:12px;margin-top:10px}.actions{display:flex;gap:10px;color:#555;font-size:14px;border-top:1px solid #eee;padding-top:10px}.product{background:#fff;border-radius:14px;padding:15px;text-align:center;box-shadow:0 1px 5px #0001}.product .price{color:#00c853;font-weight:900}.nav{display:flex;gap:8px;overflow:auto;padding:10px;background:#fff}.nav a{white-space:nowrap;background:#f0f2f5;padding:8px 14px;border-radius:20px;text-decoration:none;color:#333;font-weight:700;font-size:13px}input,textarea{width:100%;padding:12px;border:1px solid #ddd;border-radius:10px;margin-bottom:10px;font-size:15px}button{width:100%;background:#1877f2;color:#fff;border:none;padding:13px;border-radius:10px;font-size:16px;font-weight:700;cursor:pointer}.upload-row{display:flex;gap:8px;margin-bottom:10px}.upload-row label{flex:1;background:#f0f2f5;text-align:center;padding:10px;border-radius:10px;font-weight:700;font-size:14px}.upload-row input{display:none}.footer{text-align:center;color:#888;padding:20px}</style>"
+from .models import Base, User, UserRole, AdCampaign, CampaignStatus, AdObjective, SavedAudience, AdSchedule, AdPlacementSetting, WalletTopup
 
-def header():
-    u = session.get("user","زائر")
-    return '<div class="top"><div class="logo">Noor<span> Digital</span></div><div><span>👤 '+u+'</span> <a href="/login">دخول</a> <a href="/logout">خروج</a></div></div><div class="nav"><a href="/">🏠 الرئيسية</a><a href="/social">💬 Social</a><a href="/shot">🎬 Shot</a><a href="/chat">💚 Chat</a><a href="/market">🛒 Market</a><a href="/book">📢 Book</a><a href="/dashboard">📊 داشبورد</a></div>'
+# --- اعدادات ---
+SECRET_KEY = os.getenv("SECRET_KEY", "noor-secret-change-this-in-render-123456789")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./noor.db")
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# ---------- 1 - الرئيسية ----------
-@app.route("/")
-def home():
-    return render_template_string(CSS+header()+'<div class="hero"><h1>🔥 Noor Digital Group</h1><p>المشروع الكل في محل واحد<br>تواصل - فيديو - دردشة - سوق - اعلانات<br>مرحب بيك يا '+session.get("user","ضيف")+'</p><br><a href="/social" style="background:#fff;color:#1877f2;padding:12px 25px;border-radius:25px;text-decoration:none;font-weight:900">ابدأ الآن مجانا</a></div><div class="grid"><div class="card"><div class="icon">📘</div><h3>NoorBook</h3><p>مدير اعلانات نور - وصل لكل السودان</p><a href="/book">افتح NoorBook</a></div><div class="card"><div class="icon">💬</div><h3>NoorSocial</h3><p>تواصل - انشر صورة وفيديو</p><a href="/social">افتح Social</a></div><div class="card"><div class="icon">🎬</div><h3>NoorShot</h3><p>فيديوهات قصيرة - ريلز - ارباح</p><a href="/shot">افتح Shot</a></div><div class="card"><div class="icon">💚</div><h3>NoorChat</h3><p>دردشة سريعة وآمنة</p><a href="/chat">افتح Chat</a></div><div class="card"><div class="icon">🛒</div><h3>NoorMarket</h3><p>سوق السودان - بيع واشتري</p><a href="/market">افتح Market</a></div><div class="card"><div class="icon">📊</div><h3>لوحة التحكم</h3><p>تابع مشاهداتك وارباحك</p><a href="/dashboard">افتح الداشبورد</a></div></div><div class="footer">Noor Digital Group © 2026 - صنع في السودان 🇸🇩 - المشروع الكل</div>')
+# روابطنا الرسمية فقط - Vercel
+ALLOWED_ORIGINS = [
+    "https://noorbook.vercel.app",
+    "https://noorsocial.vercel.app",
+    "https://noorshot.vercel.app",
+    "https://noorchat.vercel.app",
+    "https://noormarket.vercel.app",
+    "http://localhost:3000",
+]
 
-# ---------- 2 - دخول / حساب ----------
-@app.route("/login", methods=["GET","POST"])
-def login():
-    if request.method=="POST":
-        name=request.form.get("name"); pw=request.form.get("password")
-        c=db(); r=c.execute("SELECT * FROM users WHERE name=? AND password=?",(name,pw)).fetchone()
-        if r:
-            session["user"]=name; return redirect("/")
-        else:
-            c.execute("INSERT INTO users (name,phone,password) VALUES (?,?,?)",(name,"",pw)); c.commit(); session["user"]=name; return redirect("/")
-    return render_template_string(CSS+header()+'<div class="container"><h2>🔐 دخول / انشاء حساب</h2><br><div class="post"><form method="post"><input name="name" placeholder="اسمك - مثلا يوسف" required><input name="password" type="password" placeholder="كلمة السر" required><button>دخول / انشاء حساب 🚀</button></form><p style="text-align:center;color:#888;font-size:13px;margin-top:10px">لو ما عندك حساب - حيتعمل ليك طوالي</p></div></div>')
-@app.route("/logout")
-def logout():
-    session.pop("user",None); return redirect("/")
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+Base.metadata.create_all(bind=engine)
 
-# ---------- 3 - NoorSocial ----------
-@app.route("/social", methods=["GET","POST"])
-def social():
-    c=db()
-    if request.method=="POST":
-        txt=request.form.get("text",""); link=request.form.get("img",""); img=link; is_video=0
-        f=request.files.get("file")
-        if f and f.filename!="":
-            data=f.read(); b64=base64.b64encode(data).decode()
-            img="data:"+f.content_type+";base64,"+b64
-            is_video=1 if "video" in f.content_type else 0
-        user=session.get("user","انت")
-        c.execute("INSERT INTO posts (user,text,img,is_video) VALUES (?,?,?,?)",(user,txt,img,is_video)); c.commit()
-        return redirect("/social")
-    rows=c.execute("SELECT * FROM posts ORDER BY id DESC").fetchall()
-    posts=""
-    for r in rows:
-        media=""
-        if r[3]:
-            if r[4]: media='<video src="'+r[3]+'" controls></video>'
-            else: media='<img src="'+r[3]+'">'
-        posts+='<div class="post"><b>👤 '+r[1]+'</b><p>'+r[2]+'</p>'+media+'<div class="actions"><span>❤️ '+str(r[5])+' اعجاب</span><span>💬 تعليق</span><span>↗️ مشاركة</span></div></div>'
-    form='<div class="container"><h2>💬 NoorSocial - تواصل</h2><br><div class="post"><form method="post" enctype="multipart/form-data"><textarea name="text" placeholder="اكتب شي ..."></textarea><input name="img" placeholder="او الصق رابط صورة هنا"><div class="upload-row"><label>📷 صورة / 🎬 فيديو قصير<input type="file" name="file" accept="image/*,video/*" onchange="previewFile(this)"></label></div><img id="prev" style="display:none;width:100%;border-radius:12px;margin-bottom:10px"><video id="prevV" controls style="display:none;width:100%;border-radius:12px;margin-bottom:10px"></video><p style="color:#888;font-size:12px;text-align:center">الفيديو لازم يكون قصير - اقل من 10 ميقا</p><button>انشر الآن 🚀</button></form></div>'
-    js="<script>function previewFile(e){var f=e.files[0];if(!f)return;if(f.size>10000000){alert('الفيديو كبير - اختار فيديو اقل من 10 ميقا');e.value='';return;}var r=new FileReader();r.onload=function(){if(f.type.includes('video')){document.getElementById('prevV').src=r.result;document.getElementById('prevV').style.display='block';document.getElementById('prev').style.display='none';}else{document.getElementById('prev').src=r.result;document.getElementById('prev').style.display='block';document.getElementById('prevV').style.display='none';}};r.readAsDataURL(f);}</script>"
-    return render_template_string(CSS+header()+form+posts+"</div>"+js)
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
-# ---------- 4 - NoorShot ----------
-@app.route("/shot")
-def shot():
-    c=db(); rows=c.execute("SELECT * FROM posts ORDER BY id DESC").fetchall()
-    v=""
-    for r in rows:
-        if r[4]: v+='<div class="post"><b>👤 '+r[1]+'</b><p>'+r[2]+'</p><video src="'+r[3]+'" controls></video><div class="actions"><span>❤️ '+str(r[5])+'</span><span>💬 تعليق</span><span>↗️ مشاركة</span></div></div>'
-        elif r[3]: v+='<div class="post"><b>👤 '+r[1]+'</b><p>'+r[2]+'</p><img src="'+r[3]+'"><div class="actions"><span>❤️ '+str(r[5])+'</span><span>💬 تعليق</span><span>↗️ مشاركة</span></div></div>'
-    if not v: v='<div class="post"><p>لسه ما في ريلز - انشر اول ريلز من Social</p></div>'
-    return render_template_string(CSS+header()+'<div class="container"><h2>🎬 NoorShot - ريلز</h2><br><div style="background:#fff;padding:15px;border-radius:14px;margin-bottom:12px;text-align:center"><a href="/social" style="background:#e1306c;color:#fff;padding:12px 20px;border-radius:25px;font-weight:700;text-decoration:none;display:block">🎬 + انشر ريلز جديد</a></div>'+v+'</div>')
+limiter = Limiter(key_func=get_remote_address)
+app = FastAPI(title="Noor Digital Group API - جديد")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# ---------- 5 - NoorChat ----------
-@app.route("/chat")
-def chat():
-    return render_template_string(CSS+header()+'<div class="container"><h2>💚 NoorChat - دردشة</h2><br><div class="post"><p>اهلا '+session.get("user","ضيف")+' كيفك؟ 👋</p></div><div class="post" style="background:#1877f2;color:#fff"><p>تمام والله وانت؟</p></div><div class="post"><p>شفت NoorShot الجديد؟ رهيب 🔥</p></div><form onsubmit="alert(\'تم الارسال ✅\');return false"><input placeholder="اكتب رسالة..."><button>ارسال 💬</button></form></div>')
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["*"],
+)
 
-# ---------- 6 - NoorMarket ----------
-@app.route("/market")
-def market():
-    c=db(); rows=c.execute("SELECT * FROM products").fetchall()
-    p=""
-    for r in rows: p+='<div class="product"><div style="font-size:50px">'+r[3]+'</div><h3>'+r[1]+'</h3><div class="price">'+r[2]+'</div><br><a href="/order/'+str(r[0])+'" style="background:#00c853;color:#fff;padding:10px;border-radius:10px;text-decoration:none;display:block">اشتري الآن 🛒</a></div>'
-    return render_template_string(CSS+header()+'<div class="container"><h2>🛒 NoorMarket - سوق السودان</h2><br><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'+p+'</div></div>')
-@app.route("/order/<int:pid>")
-def order(pid):
-    c=db(); r=c.execute("SELECT * FROM products WHERE id=?",(pid,)).fetchone()
-    return render_template_string(CSS+header()+f'<div class="container"><h2>✅ تم الطلب بنجاح</h2><br><div class="post" style="text-align:center"><div style="font-size:60px">{r[3]}</div><h2>{r[1]}</h2><p>السعر: {r[2]}</p><p>شكرا يا {session.get("user","ضيف")} - طلبك وصل ✅<br>حنتواصل معاك قريب</p><a href="/market" style="background:#1877f2;color:#fff;padding:12px;border-radius:10px;text-decoration:none;display:block">رجوع للسوق</a></div></div>')
+# Security Headers
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Content-Security-Policy"] = "default-src 'self'"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
 
-# ---------- 7 - NoorBook ----------
-@app.route("/book")
-def book():
-    return render_template_string(CSS+header()+'<div class="container"><h2>📢 NoorBook - مدير اعلانات نور</h2><br><div class="post"><h3>🎯 انشئ اعلانك</h3><p>وصل اعلانك لأكثر من 100,000 شخص في السودان</p><br><form onsubmit="alert(\'تم انشاء حملتك ✅\');return false"><input placeholder="اسم الاعلان"><input placeholder="ميزانيتك - مثال 50,000"><input placeholder="رابط صورة الاعلان"><button>انشئ حملة اعلانية 🚀</button></form></div><div class="post"><h3>📊 احصائياتك</h3><p>👀 المشاهدات: 12,450<br>🖱️ النقرات: 1,230<br>💰 التكلفة: 25,000 ج</p></div></div>')
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-# ---------- 8 - Dashboard ----------
-@app.route("/dashboard")
-def dash():
-    c=db(); cnt=c.execute("SELECT count(*) FROM posts").fetchone()[0]; users=c.execute("SELECT count(*) FROM users").fetchone()[0]
-    return render_template_string(CSS+header()+f'<div class="container"><h2>📊 لوحة التحكم - المشروع الكل</h2><br><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div class="post" style="text-align:center"><h1>{users}</h1><p>مستخدم مسجل</p></div><div class="post" style="text-align:center"><h1>{cnt}</h1><p>منشور محفوظ</p></div><div class="post" style="text-align:center"><h1>45K</h1><p>مشاهدة</p></div><div class="post" style="text-align:center"><h1>120K</h1><p>ارباح - جنيه</p></div></div></div>')
+# --- فلترة تلقائية - AI Moderation - جديد ---
+BANNED_WORDS = ["قمار", "سحر", "مخدرات", "نصب", "سلاح", "كراهية", "gambling", "casino", "porn", "sex", "drugs", "weapon", "scam", "telegram", "تليجرام"]
+def check_moderation(text: str):
+    low = (text or "").lower()
+    found = [w for w in BANNED_WORDS if w.lower() in low]
+    if found:
+        raise HTTPException(status_code=400, detail=f"محتوى مخالف: {', '.join(found)} - ممنوع في مجموعة نور")
+    # منع XSS
+    if "<script" in low or "javascript:" in low or "onerror=" in low:
+        raise HTTPException(status_code=400, detail="محتوى مخالف - XSS ممنوع")
+    return True
 
-# ---------- تشغيل ----------
-if __name__=="__main__":
-    port=int(os.environ.get("PORT",5000))
-    app.run(host="0.0.0.0",port=port)
+# --- Pydantic - تحقق صارم ---
+class RegisterIn(BaseModel):
+    full_name: str = Field(min_length=2, max_length=100)
+    email: EmailStr
+    phone: str = Field(min_length=9, max_length=20)
+    password: str = Field(min_length=6, max_length=100)
+    @field_validator("full_name", "phone", "password")
+    @classmethod
+    def no_script(cls, v: str):
+        if "<" in v or ">" in v:
+            raise ValueError("ممنوع رموز HTML")
+        return v.strip()
+
+class TokenOut(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user_id: str
+    full_name: str
+    role: str
+
+class CampaignIn(BaseModel):
+    title: str = Field(min_length=2, max_length=200)
+    text: str = Field(default="", max_length=2000)
+    objective: str = Field(default="traffic")
+    daily_budget: int = Field(default=0, ge=0)
+    lifetime_budget: int = Field(default=0, ge=0)
+    budget_type: str = Field(default="daily")
+
+class CampaignOut(BaseModel):
+    id: str
+    title: str
+    objective: str
+    status: str
+    daily_budget: int
+    spend: int
+    reach: int
+    clicks: int
+    sales: int
+    revenue: int
+    cpm: float
+    cpc: float
+    cpa: float
+
+# --- Auth - SSO ---
+def verify_password(plain: str, hashed: str):
+    return pwd_context.verify(plain, hashed)
+
+def get_password_hash(p: str):
+    return pwd_context.hash(p)
+
+def create_token(user_id: str):
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    return jwt.encode({"sub": user_id, "exp": expire}, SECRET_KEY, algorithm=ALGORITHM)
+
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        uid = payload.get("sub")
+        if not uid:
+            raise HTTPException(status_code=401, detail="توكن غير صالح")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="توكن غير صالح")
+    user = db.scalar(select(User).where(User.id == uuid.UUID(uid)))
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="مستخدم غير موجود")
+    return user
+
+# --- WebSocket - دردشة فورية ---
+class ConnectionManager:
+    def __init__(self):
+        self.active: dict[str, list[WebSocket]] = {}
+    async def connect(self, ws: WebSocket, room: str):
+        await ws.accept()
+        self.active.setdefault(room, []).append(ws)
+    def disconnect(self, ws: WebSocket, room: str):
+        if room in self.active and ws in self.active[room]:
+            self.active[room].remove(ws)
+    async def broadcast(self, room: str, message: dict):
+        for ws in self.active.get(room, []):
+            try:
+                await ws.send_json(message)
+            except:
+                pass
+
+manager = ConnectionManager()
+
+@app.websocket("/ws/chat/{room}")
+async def ws_chat(ws: WebSocket, room: str):
+    await manager.connect(ws, room)
+    try:
+        while True:
+            data = await ws.receive_json()
+            text = str(data.get("text", ""))[:2000]
+            check_moderation(text)
+            await manager.broadcast(room, {"room": room, "user": data.get("user", "ضيف"), "text": text, "type": data.get("type", "message")})
+    except WebSocketDisconnect:
+        manager.disconnect(ws, room)
+    except Exception:
+        manager.disconnect(ws, room)
+
+# --- Routes ---
+@app.get("/")
+def root():
+    return {"app": "Noor Digital Group API - جديد", "status": "ok", "version": "V1-new"}
+
+@app.post("/auth/register", response_model=TokenOut)
+@limiter.limit("5/minute")
+def register(request: Request, body: RegisterIn, db: Session = Depends(get_db)):
+    check_moderation(body.full_name)
+    exists = db.scalar(select(User).where((User.email == body.email) | (User.phone == body.phone)))
+    if exists:
+        raise HTTPException(status_code=400, detail="البريد او الجوال مسجل من قبل")
+    is_first = db.scalar(select(User)) is None
+    user = User(full_name=body.full_name, email=body.email.lower(), phone=body.phone, hashed_password=get_password_hash(body.password), role=UserRole.ADMIN if is_first else UserRole.USER)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return TokenOut(access_token=create_token(str(user.id)), user_id=str(user.id), full_name=user.full_name, role=user.role.value)
+
+@app.post("/auth/login", response_model=TokenOut)
+@limiter.limit("5/minute")
+def login(request: Request, form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    # SSO - دخول بالبريد او الجوال
+    user = db.scalar(select(User).where((User.email == form.username.lower()) | (User.phone == form.username)))
+    if not user or not verify_password(form.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="بيانات غلط")
+    return TokenOut(access_token=create_token(str(user.id)), user_id=str(user.id), full_name=user.full_name, role=user.role.value)
+
+@app.get("/auth/me")
+def me(user: User = Depends(get_current_user)):
+    return {"id": str(user.id), "full_name": user.full_name, "email": user.email, "phone": user.phone, "role": user.role.value, "balance": user.balance}
+
+# --- Objectives - من كراسك ---
+NOOR_OBJECTIVES = {
+    "awareness": {"ar": "وعي", "en": "Awareness", "desc": "الوصول الى الاشخاص الاكثر احتمالا لمشاهدة فيديوك"},
+    "traffic": {"ar": "زيارات", "en": "Traffic", "desc": "توجيه الاشخاص الى وجهة مثل موقعك او تطبيقك او حدث نور"},
+    "engagement": {"ar": "تفاعل", "en": "Engagement", "desc": "زيادة الرسائل - مشاهدات الفيديو - التفاعل مع المنشورات - الاعجاب بالصفحة", "good_for": "نور شات و نور توك"},
+    "leads": {"ar": "عملاء محتملين", "en": "Leads", "desc": "جمع العملاء المحتملين لعلامتك التجارية"},
+    "sales": {"ar": "مبيعات", "en": "Sales", "desc": "جعل الناس يشاهدون المحتوى - يتصلون بالعمل - يضيفون الى قائمة الامنيات"},
+    "calls": {"ar": "مكالمات", "en": "Calls", "desc": "جلب الاشخاص المهتمين بعملك ليتصلوا بك"},
+}
+
+@app.get("/api/ads/objectives")
+def get_objectives():
+    return NOOR_OBJECTIVES
+
+# --- Campaigns + Auction ---
+@app.post("/api/ads/campaigns", response_model=CampaignOut)
+@limiter.limit("20/minute")
+def create_campaign(request: Request, body: CampaignIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    check_moderation(body.title + " " + body.text)
+    # محرك المزاد - Ad Score = Bid x Quality x Relevance
+    bid = 50.0
+    quality = 0.9
+    relevance = 0.8
+    my_score = bid * quality * relevance
+    second_score = 32.0
+    cpm = (second_score / (quality * relevance)) + 0.01
+    cpc = cpm / (0.02 * 10)
+    cpa = cpc / 0.07
+    spend = body.daily_budget if body.budget_type == "daily" else body.lifetime_budget
+    if spend > 0 and spend > user.balance:
+        raise HTTPException(status_code=400, detail=f"رصيدك {user.balance} - ما كافي")
+    if spend > 0:
+        user.balance -= spend
+    reach = int(spend * 0.2) if spend > 0 else 1000
+    sales = int(reach * 0.007) if reach > 0 else 7
+    revenue = sales * 3200
+    camp = AdCampaign(user_id=user.id, title=body.title, text=body.text, objective=AdObjective(body.objective) if body.objective in [e.value for e in AdObjective] else AdObjective.TRAFFIC, daily_budget=body.daily_budget, lifetime_budget=body.lifetime_budget, budget_type=body.budget_type, spend=spend, reach=reach, clicks=int(reach*0.02), sales=sales, revenue=revenue, cpm=cpm, cpc=cpc, cpa=cpa, status=CampaignStatus.PENDING)
+    db.add(camp)
+    db.commit()
+    db.refresh(camp)
+    return CampaignOut(id=str(camp.id), title=camp.title, objective=camp.objective.value, status=camp.status.value, daily_budget=camp.daily_budget, spend=camp.spend, reach=camp.reach, clicks=camp.clicks, sales=camp.sales, revenue=camp.revenue, cpm=float(camp.cpm), cpc=float(camp.cpc), cpa=float(camp.cpa))
+
+@app.get("/api/ads/campaigns")
+def list_campaigns(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    camps = db.scalars(select(AdCampaign).where(AdCampaign.user_id == user.id).order_by(AdCampaign.created_at.desc())).all()
+    return [{"id": str(c.id), "title": c.title, "objective": c.objective.value, "status": c.status.value, "daily_budget": c.daily_budget, "spend": c.spend, "reach": c.reach, "clicks": c.clicks, "sales": c.sales, "revenue": c.revenue, "cpm": float(c.cpm), "cpc": float(c.cpc), "cpa": float(c.cpa)} for c in camps]
+
+# --- Wallet ---
+@app.post("/api/wallet/topup")
+def topup(body: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    amount = int(body.get("amount", 0))
+    method = str(body.get("method", "bankak"))
+    if amount < 1000:
+        raise HTTPException(status_code=400, detail="اقل شحن 1000")
+    t = WalletTopup(user_id=user.id, amount=amount, method=method, reference=str(body.get("reference", "")), status="pending")
+    db.add(t)
+    db.commit()
+    return {"ok": True, "msg": "تم ارسال طلب الشحن - الادمن ح يوافق", "id": str(t.id)}
+
+@app.post("/api/wallet/approve/{topup_id}")
+def approve_topup(topup_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="ادمن بس")
+    t = db.scalar(select(WalletTopup).where(WalletTopup.id == uuid.UUID(topup_id)))
+    if not t:
+        raise HTTPException(status_code=404, detail="ما لقينا الطلب")
+    if t.status == "approved":
+        return {"ok": True, "msg": "تمت الموافقة من قبل"}
+    t.status = "approved"
+    owner = db.scalar(select(User).where(User.id == t.user_id))
+    owner.balance += t.amount
+    db.commit()
+    return {"ok": True, "msg": f"تم شحن {t.amount} للمستخدم"}
